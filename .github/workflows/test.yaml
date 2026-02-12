@@ -1,4 +1,4 @@
-name: Sqla Autoloads
+name: Sqla Autoloads Tests
 
 on:
   workflow_call:

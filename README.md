@@ -1,5 +1,6 @@
 # sqla-autoloads
 
+[![CI](https://github.com/hpphpro/sqla_autoloads/actions/workflows/test.yaml/badge.svg)](https://github.com/hpphpro/sqla_autoloads/actions/workflows/test.yaml)
 [![PyPI](https://img.shields.io/pypi/v/sqla-autoloads)](https://pypi.org/project/sqla-autoloads/)
 [![Python](https://img.shields.io/pypi/pyversions/sqla-autoloads)](https://pypi.org/project/sqla-autoloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

@@ -25,9 +25,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/hpphpro/sqla-autoloads"
-Repository = "https://github.com/hpphpro/sqla-autoloads"
-Issues = "https://github.com/hpphpro/sqla-autoloads/issues"
+Homepage = "https://github.com/hpphpro/sqla_autoloads"
+Repository = "https://github.com/hpphpro/sqla_autoloads"
+Issues = "https://github.com/hpphpro/sqla_autoloads/issues"
 
 [dependency-groups]
 dev = [
