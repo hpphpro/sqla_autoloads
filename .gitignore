@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated version file
+src/sqla_autoloads/_version.py
+
+# Caching
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.benchmarks/
+
+.DS_Store

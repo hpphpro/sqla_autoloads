@@ -1,0 +1,149 @@
+[project]
+name = "sqla-autoloads"
+dynamic = ["version"]
+description = "Automatic relationship eager-loading for SQLAlchemy — LATERAL, dotted paths, self-refs, conditions"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "hpphpro", email = "fullaurum@gmail.com" }]
+keywords = ["sqlalchemy", "orm", "eager-loading", "lateral", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+    "Topic :: Database",
+]
+dependencies = [
+    "sqlalchemy>=2.0.46",
+    "typing_extensions>=4.4; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/hpphpro/sqla-autoloads"
+Repository = "https://github.com/hpphpro/sqla-autoloads"
+Issues = "https://github.com/hpphpro/sqla-autoloads/issues"
+
+[dependency-groups]
+dev = [
+    "asyncpg>=0.31.0",
+    "mypy>=1.15.0",
+    "ruff>=0.9.4",
+    "pytest>=8.3.4",
+    "testcontainers>=4.9.1",
+    "prek>=0.3.1",
+    "anyio>=4.0",
+    "pytest-anyio>=0.0.0",
+    "pytest-benchmark>=5.1.0",
+    "aiosqlite>=0.20.0",
+    "greenlet>=3.0",
+    "tox-uv>=1.25.0",
+    "asyncmy>=0.2.9",
+    "cryptography>=44.0.0",
+    "pyright>=1.1.400",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/sqla_autoloads/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sqla_autoloads"]
+
+[tool.mypy]
+warn_unused_ignores = false
+follow_imports_for_stubs = true
+ignore_missing_imports = true
+show_absolute_path = true
+hide_error_codes = false
+show_error_context = true
+strict = true
+warn_unreachable = true
+warn_no_return = true
+cache_dir = ".mypy_cache"
+exclude = "migrations/.*"
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "src"
+packages = ["sqla_autoloads", "tests"]
+
+
+[tool.ruff]
+src = ["src"]
+target-version = "py310"
+include = ["src/**.py"]
+extend-exclude = [
+    "**/migrations/*.py",
+    "tests/**.py"
+]
+lint.select = [
+    "ALL",
+]
+lint.ignore = [
+    "ARG",
+    "ANN",
+    "D",
+    "EM101",
+    "EM102",
+    "PT001",
+    "PT023",
+    "SIM108",
+    "RET505",
+    "PLR0913",
+    "PLC0415",
+    "SIM103",
+    "ISC003",
+    "COM812",
+    "SIM114",
+    "TC001",
+    "TC002",
+    "TC003",
+    "TC006",
+    "S101",
+    'TRY003',
+    'B008',
+    'RUF012',
+    'A005',
+]
+line-length = 100
+
+[tool.ruff.format]
+preview = true
+docstring-code-format = true
+docstring-code-line-length = 72
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "off"
+
+reportUnboundVariable = true
+reportPossiblyUnboundVariable = true
+reportMissingModuleSource = "none"
+autoImportCompletions = true
+reportMissingImports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = 'ignore::DeprecationWarning'
+python_files = "test_*.py"
+pythonpath = "src"
+xfail_strict = true
+log_level = "DEBUG"
+markers = [
+    "benchmark: benchmark tests (deselect with '-m not benchmark')",
+    "lateral: tests requiring LATERAL support (skip on sqlite/mariadb)",
+]
