@@ -222,6 +222,10 @@ When `sqla_select` uses LATERAL subqueries, table names in the FROM clause becom
 - Python 3.10+
 - SQLAlchemy 2.0+
 
+## Acknowledgments
+
+Special thanks to [@ocbunknown](https://github.com/ocbunknown) for testing early alpha versions and contributing implementation ideas.
+
 ## License
 
 [MIT](LICENSE)
