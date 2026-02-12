@@ -367,6 +367,11 @@ class SelectBuilder(Generic[T]):
                 )
                 if self.check_tables and lateral_name in get_table_names(query):
                     lateral_name = f"{lateral_name}_alias"
+                    # Prevent auto-correlation from removing the relation
+                    # table's FROM clause when the outer query already
+                    # references the same table.
+                    relation_table = sa.inspect(relation_cls).local_table
+                    subq = subq.correlate_except(relation_table)
 
                 lateral = subq.lateral(name=lateral_name)
                 query = query.outerjoin(lateral, sa.true())
@@ -430,7 +435,21 @@ class SelectBuilder(Generic[T]):
         # Second self-ref load on same model → selectinload to avoid identity-map conflict.
         # Must use selectinload (not subqueryload): subqueryload re-embeds the original
         # query (with its outerjoin) and resets already-populated attributes.
+        # Apply conditions via .and_() on the relationship descriptor so the
+        # selectinload's separate SELECT includes the WHERE clause.
         if self.model in self._self_ref_loaded:
+            conditions = self.conditions or {}
+            if (condition := conditions.get(relationship.key)) is not None and (
+                clause := condition(sa.select(relation_cls)).whereclause
+            ) is not None:
+                rel_attr = getattr(relation_cls, relationship.key)
+                if load is None:
+                    load = orm.selectinload(rel_attr.and_(clause))
+                else:
+                    load = load.selectinload(rel_attr.and_(clause))
+
+                return self._query, load
+
             load = _construct_strategy(orm.selectinload, relationship, load)
             return self._query, load
 

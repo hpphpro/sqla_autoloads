@@ -38,8 +38,6 @@ from .models import (
 )
 
 
-TEST_URL: Final[str] = "http://testserver.local"
-
 LATERAL_BACKENDS: Final[frozenset[str]] = frozenset({"postgres", "mysql"})
 
 pytestmark = pytest.mark.anyio

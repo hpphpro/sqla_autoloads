@@ -287,3 +287,103 @@ class TestConditions:
         assert post1 is not None
         for comment in post1.comments:
             assert comment.text == "Great post!"
+
+
+class TestSelfRefBothConditions:
+
+
+    @pytest.mark.lateral
+    async def test_both_conditions_children_first(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # children loaded first (contains_eager), parent second (selectinload).
+        query = sqla_select(
+            model=Category,
+            loads=("children", "parent"),
+            conditions={
+                "children": add_conditions(Category.name == "child_1"),
+                "parent": add_conditions(Category.name == "root"),
+            },
+        )
+        result = await session.execute(query)
+        categories = result.unique().scalars().all()
+        root = next(c for c in categories if c.name == "root")
+        child_1 = next(c for c in categories if c.name == "child_1")
+
+        # children condition: only child_1 survives
+        assert len(root.children) == 1
+        assert root.children[0].name == "child_1"
+
+        # parent condition (second self-ref via selectinload):
+        # child_1.parent is root → matches "root" → loaded
+        assert child_1.parent is not None
+        assert child_1.parent.name == "root"
+
+    @pytest.mark.lateral
+    async def test_both_conditions_parent_first(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # parent loaded first (contains_eager), children second (selectinload).
+        query = sqla_select(
+            model=Category,
+            loads=("parent", "children"),
+            conditions={
+                "children": add_conditions(Category.name == "child_1"),
+                "parent": add_conditions(Category.name == "root"),
+            },
+        )
+        result = await session.execute(query)
+        categories = result.unique().scalars().all()
+        root = next(c for c in categories if c.name == "root")
+        child_1 = next(c for c in categories if c.name == "child_1")
+
+        # parent condition (first self-ref via contains_eager):
+        assert child_1.parent is not None
+        assert child_1.parent.name == "root"
+
+        # children condition (second self-ref via selectinload):
+        assert len(root.children) == 1
+        assert root.children[0].name == "child_1"
+
+    async def test_condition_on_second_self_ref_only(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Condition only on parent (second self-ref): children unfiltered.
+        query = sqla_select(
+            model=Category,
+            loads=("children", "parent"),
+            conditions={"parent": add_conditions(Category.name == "root")},
+        )
+        result = await session.execute(query)
+        categories = result.unique().scalars().all()
+        root = next(c for c in categories if c.name == "root")
+        child_1 = next(c for c in categories if c.name == "child_1")
+
+        # children: no condition → both children loaded
+        assert len(root.children) == 2
+
+        # parent: condition applied via selectinload .and_()
+        assert child_1.parent is not None
+        assert child_1.parent.name == "root"
+
+    async def test_condition_on_first_self_ref_only(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Condition only on children (first self-ref): parent unfiltered.
+        query = sqla_select(
+            model=Category,
+            loads=("children", "parent"),
+            conditions={"children": add_conditions(Category.name == "child_1")},
+        )
+        result = await session.execute(query)
+        categories = result.unique().scalars().all()
+        root = next(c for c in categories if c.name == "root")
+        child_1 = next(c for c in categories if c.name == "child_1")
+
+        # children: filtered → only child_1
+        assert len(root.children) == 1
+        assert root.children[0].name == "child_1"
+
+        # parent: no condition → loaded normally
+        assert child_1.parent is not None
+        assert child_1.parent.name == "root"

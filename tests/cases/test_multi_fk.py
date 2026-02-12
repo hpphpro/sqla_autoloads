@@ -82,3 +82,40 @@ class TestMultiForeignKey:
         sql_text = str(query.compile(compile_kwargs={"literal_binds": True}))
 
         assert "users" in sql_text
+
+    async def test_check_tables_three_fks(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        query = sqla_select(
+            model=Message,
+            loads=("from_user", "to_user", "owner"),
+            check_tables=True,
+        )
+        result = await session.execute(query)
+        messages = result.unique().scalars().all()
+        msg1 = next(m for m in messages if m.id == 1)
+
+        assert msg1.from_user.name == "alice"
+        assert msg1.to_user.name == "bob"
+        assert msg1.owner.name == "alice"
+
+    @pytest.mark.lateral
+    async def test_user_side_all_messages_check_tables(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        query = sqla_select(
+            model=User,
+            loads=("sent_messages", "received_messages", "owned_messages"),
+            check_tables=True,
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        bob = next(u for u in users if u.name == "bob")
+
+        assert len(alice.sent_messages) == 2
+        assert len(alice.received_messages) == 1
+        assert len(alice.owned_messages) == 1
+        assert len(bob.sent_messages) == 1
+        assert len(bob.received_messages) == 1
+        assert len(bob.owned_messages) == 1
