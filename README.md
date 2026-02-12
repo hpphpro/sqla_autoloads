@@ -187,6 +187,10 @@ Without `.unique()`, SQLAlchemy will raise an error or return duplicate objects.
 
 > **Note:** The `distinct=True` parameter in `sqla_select` applies SQL-level `DISTINCT`, which deduplicates by column values. It does **not** replace `.unique()`, which deduplicates by object identity.
 
+### Filtering with `.where()` after `sqla_select`
+
+When `sqla_select` uses LATERAL subqueries, table names in the FROM clause become LATERAL aliases. This means `Model.column` references may not resolve correctly in `.where()` — use `sa.literal_column("alias.column")` instead. See **[FAQ.md](FAQ.md)** for naming rules and examples.
+
 ## API Reference
 
 | Function | Description |
