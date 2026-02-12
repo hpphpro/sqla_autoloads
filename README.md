@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/hpphpro/sqla_autoloads/actions/workflows/test.yaml/badge.svg)](https://github.com/hpphpro/sqla_autoloads/actions/workflows/test.yaml)
 [![PyPI](https://img.shields.io/pypi/v/sqla-autoloads)](https://pypi.org/project/sqla-autoloads/)
-[![Python](https://img.shields.io/pypi/pyversions/sqla-autoloads)](https://pypi.org/project/sqla-autoloads/)
+[![Python](https://img.shields.io/pypi/pyversions/sqla_autoloads)](https://pypi.org/project/sqla-autoloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Automatic relationship eager-loading for SQLAlchemy. Build `SELECT` queries with LATERAL subqueries, dotted-path traversal, self-referential handling, and per-relationship conditions — all from a single function call.
