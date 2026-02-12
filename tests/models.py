@@ -70,6 +70,11 @@ class Post(Base):
         viewonly=True,
         lazy="noload",
     )
+    post_tags: orm.Mapped[list[PostTag]] = orm.relationship(
+        viewonly=True,
+        primaryjoin="Post.id == foreign(PostTag.post_id)",
+        lazy="noload",
+    )
     attachments: orm.Mapped[list[Attachment]] = orm.relationship(
         primaryjoin="and_(Post.id == foreign(Attachment.attachable_id), Attachment.attachable_type == 'post')",
         viewonly=True,
@@ -107,6 +112,11 @@ class Tag(Base):
     posts: orm.Mapped[list[Post]] = orm.relationship(
         secondary=PostTag.__table__, # or just "post_tags"
         back_populates="tags",
+        lazy="noload",
+    )
+    post_tags: orm.Mapped[list[PostTag]] = orm.relationship(
+        viewonly=True,
+        primaryjoin="Tag.id == foreign(PostTag.tag_id)",
         lazy="noload",
     )
 

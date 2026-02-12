@@ -154,7 +154,7 @@ class SelectBuilder(Generic[T]):
         self._first_load_by_class: dict[type, _AbstractLoad] = {}
         self._lateral_map: dict[sa.Table | sa.FromClause, LateralFromClause] = {}
 
-    def build(
+    def build(  # noqa: PLR0912 C901
         self,
         loads: tuple[str, ...] = (),
         query: sa.Select[tuple[T]] | None = None,
@@ -184,16 +184,38 @@ class SelectBuilder(Generic[T]):
         )
         simple = [load for load in loads if "." not in load]
 
+        # Resolve all loads before processing so we can reorder when needed.
+        resolved: list[Sequence[orm.RelationshipProperty[orm.DeclarativeBase]]] = []
         for load_key in (*dotted, *simple):
             if "." in load_key:
                 result = _resolve_dotted_path(self.model, load_key, self.node)
             else:
                 result = _bfs_search(self.model, load_key, self.node)
 
-            if not result:
-                continue
+            if result:
+                resolved.append(result)
 
-            load = self._construct_loads(result)
+        # When a direct O2M targets the same table that an M2M uses as its
+        # secondary, move the O2M before the M2M so its LATERAL is available
+        # for reuse (avoids a duplicate raw join for the association table).
+        m2m_secondaries: dict[sa.FromClause, int] = {}
+        direct_targets: dict[sa.FromClause, int] = {}
+        for index, rels in enumerate(resolved):
+            rel = rels[0]
+            if rel.secondary is not None:
+                m2m_secondaries[rel.secondary] = index
+            else:
+                target_table = sa.inspect(rel.mapper.class_).local_table
+                direct_targets[target_table] = index
+
+        for table, m2m_idx in m2m_secondaries.items():
+            if table in direct_targets:
+                o2m_idx = direct_targets[table]
+                if o2m_idx > m2m_idx:
+                    resolved[m2m_idx], resolved[o2m_idx] = resolved[o2m_idx], resolved[m2m_idx]
+
+        for relationships in resolved:
+            load = self._construct_loads(relationships)
             if load:
                 self._options += load
 
@@ -278,7 +300,7 @@ class SelectBuilder(Generic[T]):
 
         return [load, *load_criteria, *extra_options] if load else None
 
-    def _load_relationship(  # noqa: PLR0912 C901
+    def _load_relationship(  # noqa: PLR0912 C901 PLR0915
         self,
         params: _LoadRelationParams,
     ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
@@ -338,19 +360,34 @@ class SelectBuilder(Generic[T]):
                 query = self._query
                 adapter = self._get_clause_adapter(relationship.parent.local_table)
                 if relationship.secondary is not None and relationship.secondaryjoin is not None:
-                    subq = subq.where(relationship.secondaryjoin)
-                    primaryjoin = (
-                        adapter.traverse(relationship.primaryjoin)
-                        if adapter
-                        else relationship.primaryjoin
-                    )
-                    # The outer query must also join the association table so the
-                    # LATERAL sub-query can reference it.
-                    if self.check_tables:
-                        if relationship.secondary.description not in get_table_names(query):
-                            query = query.outerjoin(relationship.secondary, primaryjoin)
+                    secondary_table = relationship.secondary
+                    secondary_lateral = self._lateral_map.get(secondary_table)
+
+                    if secondary_lateral is not None:
+                        # Secondary table already loaded as LATERAL (from O2M).
+                        # Adapt secondaryjoin to reference the lateral alias columns.
+                        sec_adapter = ClauseAdapter(
+                            secondary_lateral,
+                            equivalents={
+                                col: {secondary_lateral.c[col.key]} for col in secondary_table.c
+                            },
+                        )
+                        subq = subq.where(sec_adapter.traverse(relationship.secondaryjoin))
                     else:
-                        query = query.outerjoin(relationship.secondary, primaryjoin)
+                        # Original path: raw join + unmodified secondaryjoin
+                        subq = subq.where(relationship.secondaryjoin)
+                        primaryjoin = (
+                            adapter.traverse(relationship.primaryjoin)
+                            if adapter
+                            else relationship.primaryjoin
+                        )
+                        # The outer query must also join the association table so the
+                        # LATERAL sub-query can reference it.
+                        if self.check_tables:
+                            if secondary_table.description not in get_table_names(query):
+                                query = query.outerjoin(secondary_table, primaryjoin)
+                        else:
+                            query = query.outerjoin(secondary_table, primaryjoin)
                 else:
                     subq = subq.where(
                         adapter.traverse(relationship.primaryjoin)
@@ -477,11 +514,10 @@ class SelectBuilder(Generic[T]):
                 _cls: type[orm.DeclarativeBase] = relation_cls,
             ) -> sa.Select[tuple[T]]:
                 assert _fn
-                return (
-                    q.where(_adapter.traverse(clause))
-                    if (clause := _fn(sa.select(_cls)).whereclause) is not None
-                    else q
-                )
+                if (clause := _fn(sa.select(_cls)).whereclause) is not None:
+                    return q.where(_adapter.traverse(clause))
+
+                return q
 
             conditions = {**conditions, relationship.key: adapted}
 

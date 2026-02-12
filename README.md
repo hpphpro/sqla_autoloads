@@ -76,7 +76,7 @@ async def get_users(*loads: UserLoad) -> list[User]:
 - **LATERAL subqueries** with configurable limit (default 50 per relationship)
 - **Dotted paths** — `"posts.comments.reactions"` traverses the chain automatically
 - **Self-referential relationships** — parent/children on the same model
-- **M2M** through association tables
+- **M2M** through association tables (including M2M + direct O2M to the same table)
 - **Multiple FKs** to the same table (e.g. `from_user`, `to_user`, `owner`)
 - **Per-relationship conditions** via `add_conditions`
 - **Automatic strategy selection** — `contains_eager`, `selectinload`, `joinedload`, `subqueryload`
@@ -100,6 +100,18 @@ query = sqla_select(model=Post, loads=("author",))
 
 # Multiple relationships at once
 query = sqla_select(model=User, loads=("posts", "roles", "profile"))
+```
+
+### M2M + direct O2M to same association table
+
+```python
+# When Post has both tags (M2M via post_tags) and post_tags (O2M to PostTag),
+# a single LATERAL subquery is shared — no duplicate joins:
+query = sqla_select(
+    model=Post,
+    loads=("tags", "post_tags"),
+    check_tables=True,
+)
 ```
 
 ### Deep / dotted paths

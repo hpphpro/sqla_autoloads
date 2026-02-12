@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-12
+
+### Fixed
+- M2M + O2M to the same association table no longer produces duplicate joins. When a model has both an M2M (via secondary table S) and a direct O2M to S, LATERAL queries now reuse a single LATERAL subquery instead of generating a redundant raw JOIN + aliased LATERAL.
+
+### Added
+- Tests for M2M + association table coexistence (`TestM2MWithAssociationTable`)
+
 ## [0.1.1] - 2026-02-12
 
 ### Fixed
