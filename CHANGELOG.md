@@ -5,13 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.3] - 2026-02-14
+## [0.1.4] - 2026-02-14
 
 ### Added
 - `optimization` parameter for `sqla_select` (default `True`). Set to `False` to disable ZIP optimization and use plain LATERAL `ON TRUE` joins.
 - **Deep-level ZIP optimization**: sibling LATERAL subqueries are now aligned via ROW_NUMBER at every depth level (not just first-hop). When 2+ uselist relationships exist at the same depth, they share a single RN series from a recursive CTE, eliminating cross-product row multiplication. Example: `("posts.comments", "posts.tags", "roles")` with limit=50 produces 50×50=2,500 rows/user instead of 50×50×50=125,000.
 - `TestDeepZip` test class: 6 tests covering depth-1 siblings, depth-2 siblings, mixed-depth ZIP, conditions inside deep ZIP, single-hop no-zip.
 - `test_user_everything`: integration test loading 10 relationship paths across 3 depth levels.
+
+## [0.1.3] - 2026-02-13 [YANKED]
+
+Yanked: tag pointed to wrong commit (pre-ZIP code). Use 0.1.4 instead.
 
 ## [0.1.2] - 2026-02-12
 
