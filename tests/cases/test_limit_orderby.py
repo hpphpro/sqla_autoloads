@@ -58,3 +58,26 @@ class TestLimitAndOrderBy:
         root = next(c for c in categories if c.name == "root")
 
         assert len(root.children) <= 1
+
+    async def test_order_by_on_m2m(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """Custom order_by applies to M2M relationship LATERAL."""
+        query = sqla_select(model=User, loads=("roles",), order_by=("name",))
+        sql = str(query.compile(compile_kwargs={"literal_binds": True}))
+        assert "name" in sql
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        assert len(alice.roles) > 0
+
+    async def test_order_by_m2m_result_ordering(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """M2M roles are ordered by name ASC when order_by=("name",)."""
+        query = sqla_select(model=User, loads=("roles",), order_by=("name",))
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        role_names = [r.name for r in alice.roles]
+        assert role_names == sorted(role_names)

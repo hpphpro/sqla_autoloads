@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqla_autoloads import add_conditions, sqla_select
 
-from ..models import Base, Post, User
+from ..models import Attachment, Base, Post, Profile, User
 
 pytestmark = pytest.mark.anyio
 
@@ -77,3 +77,75 @@ class TestEdgeCases:
         users = result.unique().scalars().all()
 
         assert len(users) > 0
+
+    @pytest.mark.lateral
+    async def test_negative_limit_raises(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """Negative limit is rejected by the database."""
+        query = sqla_select(model=User, loads=("posts",), limit=-1)
+        with pytest.raises(sa.exc.DBAPIError):
+            await session.execute(query)
+
+    async def test_empty_m2m(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """User with no roles returns empty list for M2M."""
+        query = sqla_select(model=User, loads=("roles",))
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        charlie = next(u for u in users if u.name == "charlie")
+        assert charlie.roles == []
+
+    async def test_o2o_with_conditions(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """O2O (Profile) with conditions."""
+        query = sqla_select(
+            model=User,
+            loads=("profile",),
+            conditions={"profile": add_conditions(Profile.bio == "Alice bio")},
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        assert alice.profile is not None
+        assert alice.profile.bio == "Alice bio"
+
+    async def test_o2o_null(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """User without profile gets None."""
+        query = sqla_select(model=User, loads=("profile",))
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        charlie = next(u for u in users if u.name == "charlie")
+        assert charlie.profile is None
+
+    @pytest.mark.lateral
+    async def test_m2m_limit_zero(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """M2M with limit=0 loads empty list."""
+        query = sqla_select(model=User, loads=("roles",), limit=0)
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        for user in users:
+            assert user.roles == []
+
+    @pytest.mark.lateral
+    async def test_polymorphic_with_conditions(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """Polymorphic relationship (Post.attachments) with conditions."""
+        query = sqla_select(
+            model=Post,
+            loads=("attachments",),
+            conditions={"attachments": add_conditions(Attachment.url.like("%img%"))},
+        )
+        result = await session.execute(query)
+        posts = result.unique().scalars().all()
+        post1 = next(p for p in posts if p.title == "Alice Post 1")
+        assert len(post1.attachments) == 2
+        for att in post1.attachments:
+            assert "img" in att.url

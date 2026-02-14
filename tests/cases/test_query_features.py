@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqla_autoloads import add_conditions, sqla_select
 
-from ..models import Base, Category, Message, Post, Tag, User
+from ..models import Base, Category, Message, Post, Tag, User, user_roles
 
 pytestmark = pytest.mark.anyio
 
@@ -114,6 +114,36 @@ class TestQueryFeatures:
         users = result.unique().scalars().all()
 
         assert len(users) > 0
+
+
+    @pytest.mark.lateral
+    async def test_check_tables_m2m_secondary_in_base(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # check_tables=True when M2M secondary table is already joined in base query.
+        base = sa.select(User).outerjoin(user_roles)
+        query = sqla_select(
+            model=User,
+            loads=("roles",),
+            query=base,
+            check_tables=True,
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        assert len(alice.roles) > 0
+
+    async def test_base_query_with_order_by(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """Base query with ORDER BY clause + relationship loads."""
+        base = sa.select(User).order_by(User.name.asc())
+        query = sqla_select(model=User, loads=("posts",), query=base)
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        names = [u.name for u in users]
+        assert names == sorted(names)
+        assert all(len(u.posts) >= 0 for u in users)
 
 
 class TestCheckTablesNaming:

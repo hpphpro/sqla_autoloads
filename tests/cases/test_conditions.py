@@ -387,3 +387,72 @@ class TestSelfRefBothConditions:
         # parent: no condition → loaded normally
         assert child_1.parent is not None
         assert child_1.parent.name == "root"
+
+
+class TestConditionEdgeCases:
+
+    async def test_condition_on_intermediate_segment(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Condition on middle of dotted path: posts.comments with condition on 'comments'.
+        query = sqla_select(
+            model=User,
+            loads=("posts.comments",),
+            conditions={"comments": add_conditions(Comment.text.like("%post%"))},
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        for post in alice.posts:
+            for comment in post.comments:
+                assert "post" in comment.text.lower()
+
+    @pytest.mark.lateral
+    async def test_self_ref_children_with_limit_and_conditions(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Self-ref children loaded with limit + conditions simultaneously.
+        query = sqla_select(
+            model=Category,
+            loads=("children",),
+            self_key="parent_id",
+            limit=10,
+            conditions={"children": add_conditions(Category.name == "child_1")},
+        )
+        result = await session.execute(query)
+        categories = result.unique().scalars().all()
+        root = next(c for c in categories if c.name == "root")
+
+        assert len(root.children) == 1
+        assert root.children[0].name == "child_1"
+
+    @pytest.mark.lateral
+    async def test_passthrough_condition_lateral(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Condition that returns query unchanged (no .where()) with LATERAL should not crash.
+        query = sqla_select(
+            model=User,
+            loads=("posts",),
+            conditions={"posts": lambda q: q},
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+
+        assert len(alice.posts) > 0
+
+    async def test_condition_key_not_in_loads(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        # Condition key for relationship not in loads is silently ignored.
+        query = sqla_select(
+            model=User,
+            loads=("posts",),
+            conditions={"roles": add_conditions(Role.name == "admin")},
+        )
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+
+        assert len(alice.posts) == 3

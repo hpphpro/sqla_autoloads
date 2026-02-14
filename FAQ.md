@@ -188,3 +188,41 @@ print(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds
 ```
 
 Look for `LATERAL (...) AS <name>` in the output — `<name>` is the alias to use with `sa.literal_column()`.
+
+---
+
+## 8. ZIP optimization & performance
+
+### What is ZIP?
+
+When a query loads 2+ **uselist** (one-to-many or many-to-many) relationships at the **same depth**, each LATERAL subquery returns up to `limit` rows. Without ZIP, the database produces a cross-product between siblings — e.g. 50 posts × 50 roles = 2,500 rows per user.
+
+ZIP eliminates this by assigning a shared **ROW_NUMBER** series (via a recursive CTE) to sibling LATERAL subqueries at each depth. Each sibling filters on the same RN range, so they align row-by-row instead of multiplying.
+
+### When does it activate?
+
+ZIP activates automatically when **all** of these conditions are met:
+
+1. `limit` is set (not `None`)
+2. Two or more **uselist** relationships exist at the same depth level
+3. The relationships are loaded via LATERAL subqueries
+
+Single relationships at a given depth, or `limit=None` queries, are unaffected.
+
+To disable ZIP entirely, pass `optimization=False` to `sqla_select`. All sibling LATERALs will join on `ON TRUE` (cross-product), which may be faster for small datasets.
+
+### Row count formula
+
+| Without ZIP | With ZIP |
+|---|---|
+| `limit ^ number_of_laterals` | `limit ^ number_of_zip_depths` |
+
+Example with `limit=50`, loads `("posts.comments", "posts.tags", "roles")`:
+
+- **3 LATERAL subqueries**: `roles` (depth 1), `comments` (depth 2), `tags` (depth 2)
+- **Without ZIP**: 50 × 50 × 50 = 125,000 rows per user
+- **With ZIP**: depth 1 has 1 lateral (`roles`, no zip needed), depth 2 has 2 siblings (`comments` + `tags`, zipped) → 50 × 50 = 2,500 rows per user
+
+### Performance note
+
+The ZIP query uses a recursive CTE + ROW_NUMBER window function. For **small datasets** (few children per relationship), the overhead of the CTE can make the single complex query slower than issuing separate simple queries. The benefit appears at scale — roughly **50+ children per relationship** — where the cross-product elimination dominates.

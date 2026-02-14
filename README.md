@@ -74,6 +74,7 @@ async def get_users(*loads: UserLoad) -> list[User]:
 ## Features
 
 - **LATERAL subqueries** with configurable limit (default 50 per relationship)
+- **ZIP optimization** — when 2+ sibling LATERAL subqueries exist at any depth, aligns them via ROW_NUMBER to prevent row multiplication (cross-product elimination)
 - **Dotted paths** — `"posts.comments.reactions"` traverses the chain automatically
 - **Self-referential relationships** — parent/children on the same model
 - **M2M** through association tables (including M2M + direct O2M to the same table)
@@ -227,6 +228,7 @@ When `sqla_select` uses LATERAL subqueries, table names in the FROM clause becom
 | `self_key` | `str` | auto-detected | FK column for self-referential relationships |
 | `many_load` | `str` | `"subqueryload"` | Strategy for `limit=None`: `"subqueryload"` or `"selectinload"` |
 | `distinct` | `bool` | `False` | Apply DISTINCT to the query |
+| `optimization` | `bool` | `True` | Enable ZIP optimization (ROW_NUMBER alignment for sibling LATERALs) |
 | `check_tables` | `bool` | `False` | Check for existing tables to avoid duplicate joins |
 
 ## Requirements

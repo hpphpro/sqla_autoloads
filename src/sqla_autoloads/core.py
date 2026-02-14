@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ class _LoadRelationParams:
     relationship: orm.RelationshipProperty[orm.DeclarativeBase]
     is_alias: bool = False
     load: _AbstractLoad | None = None
+    rn_series: sa.Subquery | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -71,6 +73,7 @@ class _LoadParams(Generic[T]):
     order_by: tuple[str, ...] | None = field(default=None)
     query: sa.Select[tuple[T]] | None = field(default=None)
     many_load: _ManyLoadStrategy = field(default="subqueryload")
+    optimization: bool = field(default=True)
 
 
 class _LoadParamsType(TypedDict, Generic[T], total=False):
@@ -85,6 +88,7 @@ class _LoadParamsType(TypedDict, Generic[T], total=False):
     distinct: bool
     limit: int | None
     many_load: _ManyLoadStrategy
+    optimization: bool
 
 
 class SelectBuilder(Generic[T]):
@@ -106,6 +110,7 @@ class SelectBuilder(Generic[T]):
         "_query",
         "_seen_classes",
         "_self_ref_loaded",
+        "_zip_levels",
         "check_tables",
         "conditions",
         "distinct",
@@ -113,6 +118,7 @@ class SelectBuilder(Generic[T]):
         "many_load",
         "model",
         "node",
+        "optimization",
         "order_by",
         "self_key",
     )
@@ -133,6 +139,7 @@ class SelectBuilder(Generic[T]):
         order_by: tuple[str, ...] | None,
         many_load: str,
         distinct: bool,
+        optimization: bool = True,
     ) -> None:
         if orm.DeclarativeBase in getattr(model, "__bases__", ()) or model is orm.DeclarativeBase:
             raise TypeError("model must not be orm.DeclarativeBase")
@@ -146,6 +153,7 @@ class SelectBuilder(Generic[T]):
         self.order_by = order_by
         self.many_load = many_load
         self.distinct = distinct
+        self.optimization = optimization
         self._query: sa.Select[tuple[T]] = sa.select(model)
         self._options: list[_AbstractLoad | LoaderCriteriaOption] = []
         self._loaded: dict[str, _AbstractLoad] = {}
@@ -153,8 +161,9 @@ class SelectBuilder(Generic[T]):
         self._self_ref_loaded: set[type] = set()
         self._first_load_by_class: dict[type, _AbstractLoad] = {}
         self._lateral_map: dict[sa.Table | sa.FromClause, LateralFromClause] = {}
+        self._zip_levels: dict[int, sa.Subquery] = {}
 
-    def build(  # noqa: PLR0912 C901
+    def build(
         self,
         loads: tuple[str, ...] = (),
         query: sa.Select[tuple[T]] | None = None,
@@ -195,29 +204,7 @@ class SelectBuilder(Generic[T]):
             if result:
                 resolved.append(result)
 
-        # When a direct O2M targets the same table that an M2M uses as its
-        # secondary, move the O2M before the M2M so its LATERAL is available
-        # for reuse (avoids a duplicate raw join for the association table).
-        m2m_secondaries: dict[sa.FromClause, int] = {}
-        direct_targets: dict[sa.FromClause, int] = {}
-        for index, rels in enumerate(resolved):
-            rel = rels[0]
-            if rel.secondary is not None:
-                m2m_secondaries[rel.secondary] = index
-            else:
-                target_table = sa.inspect(rel.mapper.class_).local_table
-                direct_targets[target_table] = index
-
-        for table, m2m_idx in m2m_secondaries.items():
-            if table in direct_targets:
-                o2m_idx = direct_targets[table]
-                if o2m_idx > m2m_idx:
-                    resolved[m2m_idx], resolved[o2m_idx] = resolved[o2m_idx], resolved[m2m_idx]
-
-        for relationships in resolved:
-            load = self._construct_loads(relationships)
-            if load:
-                self._options += load
+        self._construct(resolved)
 
         if self._options:
             self._query = self._query.options(*self._options)
@@ -249,7 +236,7 @@ class SelectBuilder(Generic[T]):
         extra_options: list[_AbstractLoad] = []
         cumulative_path = ""
 
-        for relationship in relationships:
+        for depth, relationship in enumerate(relationships):
             relation_cls = relationship.mapper.class_
             key = relationship.key
             cumulative_path = f"{cumulative_path}.{key}" if cumulative_path else key
@@ -272,12 +259,14 @@ class SelectBuilder(Generic[T]):
                 continue
 
             is_alias = relation_cls in self._seen_classes
+            rn_series = self._zip_levels.get(depth) if relationship.uselist else None
 
             self._query, load = self._load_relationship(
                 _LoadRelationParams(
                     relationship=relationship,
                     load=load,
                     is_alias=is_alias,
+                    rn_series=rn_series,
                 ),
             )
             self._loaded[cumulative_path] = load
@@ -300,30 +289,19 @@ class SelectBuilder(Generic[T]):
 
         return [load, *load_criteria, *extra_options] if load else None
 
-    def _load_relationship(  # noqa: PLR0912 C901 PLR0915
+    def _load_relationship(
         self,
         params: _LoadRelationParams,
     ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
         """Select the eager-loading strategy for a single relationship hop.
 
-        Three main paths:
+        Dispatches to specialised helpers based on relationship type:
 
-        * **Self-referential** (``relation_cls is self.model`` and same parent) —
-            delegates to ``_load_self`` with ``side="many"`` or ``"one"``.
-        * **O2M / M2M** (``uselist=True``):
-
-            - With ``limit``: builds a LATERAL sub-query joined via ``outerjoin(..., true())``,
-                using ``contains_eager`` with the lateral alias.  For M2M, the secondary
-                table is joined first and the secondary-join clause is compiled with
-                the join clause directly as a SQLAlchemy expression.
-            - Without ``limit``: plain ``subqueryload`` / ``selectinload`` (per ``many_load``).
-
-        * **M2O** (``uselist=False``):
-
-            - ``is_alias=True``: ``selectinload`` (separate query) to avoid identity-map
-                conflicts when the entity is already loaded.
-            - Otherwise: ``outerjoin`` + ``contains_eager`` when the parent table is
-                already present in the query, else ``joinedload``.
+        * **Self-referential** → ``_load_self``
+        * **O2M / M2M with limit** →
+            ``_load_lateral_zip_m2m`` / ``_load_lateral_zip_o2m`` / ``_load_lateral``
+        * **O2M / M2M without limit** → plain ``subqueryload`` / ``selectinload``
+        * **M2O** → ``_load_m2o``
 
         Returns:
             ``(query, load)`` — the possibly-modified SELECT and the loader option.
@@ -334,89 +312,257 @@ class SelectBuilder(Generic[T]):
         is_alias = params.is_alias
         conditions = self.conditions or {}
 
+        # Self-referential
         if relation_cls is self.model and relationship.parent.class_ is relation_cls:
             if not self.self_key:
                 raise ValueError("`self_key` should be set for self join")
+
             return self._load_self(
                 _LoadSelfParams(relationship=relationship, load=load),
                 side="many" if relationship.uselist else "one",
             )
 
+        # O2M / M2M
         if relationship.uselist:
             if self.limit is None:
-                load = _construct_strategy(
-                    _MANY_LOAD_STRATEGIES[self.many_load], relationship, load
-                )
-            else:
-                subq = _apply_conditions(
-                    _apply_order_by(
-                        sa.select(relation_cls).limit(self.limit),
-                        relation_cls,
-                        self.order_by,
-                    ),
-                    relationship.key,
-                    conditions,  # type: ignore[arg-type]
-                )
-                query = self._query
-                adapter = self._get_clause_adapter(relationship.parent.local_table)
-                if relationship.secondary is not None and relationship.secondaryjoin is not None:
-                    secondary_table = relationship.secondary
-                    secondary_lateral = self._lateral_map.get(secondary_table)
-
-                    if secondary_lateral is not None:
-                        # Secondary table already loaded as LATERAL (from O2M).
-                        # Adapt secondaryjoin to reference the lateral alias columns.
-                        sec_adapter = ClauseAdapter(
-                            secondary_lateral,
-                            equivalents={
-                                col: {secondary_lateral.c[col.key]} for col in secondary_table.c
-                            },
-                        )
-                        subq = subq.where(sec_adapter.traverse(relationship.secondaryjoin))
-                    else:
-                        # Original path: raw join + unmodified secondaryjoin
-                        subq = subq.where(relationship.secondaryjoin)
-                        primaryjoin = (
-                            adapter.traverse(relationship.primaryjoin)
-                            if adapter
-                            else relationship.primaryjoin
-                        )
-                        # The outer query must also join the association table so the
-                        # LATERAL sub-query can reference it.
-                        if self.check_tables:
-                            if secondary_table.description not in get_table_names(query):
-                                query = query.outerjoin(secondary_table, primaryjoin)
-                        else:
-                            query = query.outerjoin(secondary_table, primaryjoin)
-                else:
-                    subq = subq.where(
-                        adapter.traverse(relationship.primaryjoin)
-                        if adapter
-                        else relationship.primaryjoin
+                if not (_strategy := _MANY_LOAD_STRATEGIES.get(self.many_load)):
+                    warnings.warn(
+                        f"Unknown many_load strategy: {self.many_load}. Using subqueryload.",
+                        stacklevel=2,
                     )
+                    _strategy = orm.subqueryload
 
-                # Alias entities get a disambiguated lateral name (table_relkey)
-                # to avoid collisions when the same table appears multiple times.
-                lateral_name = (
-                    f"{get_table_name(relation_cls)}_{relationship.key}"
-                    if is_alias
-                    else get_table_name(relation_cls)
+                load = _construct_strategy(_strategy, relationship, load)
+
+                return self._query, load
+
+            query = self._query
+            adapter = self._get_clause_adapter(relationship.parent.local_table)
+            rn_series = params.rn_series
+
+            if (
+                rn_series is not None
+                and relationship.secondary is not None
+                and self._lateral_map.get(relationship.secondary) is None
+            ):
+                return self._load_lateral_zip_m2m(
+                    relationship,
+                    relation_cls,
+                    load,
+                    is_alias=is_alias,
+                    conditions=conditions,
+                    adapter=adapter,
+                    query=query,
+                    rn_series=rn_series,
                 )
-                if self.check_tables and lateral_name in get_table_names(query):
-                    lateral_name = f"{lateral_name}_alias"
-                    # Prevent auto-correlation from removing the relation
-                    # table's FROM clause when the outer query already
-                    # references the same table.
-                    relation_table = sa.inspect(relation_cls).local_table
-                    subq = subq.correlate_except(relation_table)
+            if rn_series is not None and relationship.secondary is None:
+                return self._load_lateral_zip_o2m(
+                    relationship,
+                    relation_cls,
+                    load,
+                    is_alias=is_alias,
+                    conditions=conditions,
+                    adapter=adapter,
+                    query=query,
+                    rn_series=rn_series,
+                )
+            return self._load_lateral(
+                relationship,
+                relation_cls,
+                load,
+                is_alias=is_alias,
+                conditions=conditions,
+                adapter=adapter,
+                query=query,
+            )
 
-                lateral = subq.lateral(name=lateral_name)
-                query = query.outerjoin(lateral, sa.true())
-                load = _construct_strategy(orm.contains_eager, relationship, load, alias=lateral)
-                relation_table = sa.inspect(relation_cls).local_table
-                self._lateral_map[relation_table] = lateral
-                self._query = query
-        elif is_alias:
+        # M2O
+        return self._load_m2o(
+            relationship,
+            relation_cls,
+            load,
+            is_alias=is_alias,
+            conditions=conditions,
+        )
+
+    def _load_lateral_zip_m2m(
+        self,
+        relationship: orm.RelationshipProperty[orm.DeclarativeBase],
+        relation_cls: type[orm.DeclarativeBase],
+        load: _AbstractLoad | None,
+        *,
+        is_alias: bool,
+        conditions: Mapping[str, Any],
+        adapter: ClauseAdapter | None,
+        query: sa.Select[tuple[T]],
+        rn_series: sa.Subquery,
+    ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
+        """ZIP M2M: self-contained LATERAL with secondary join inside the subquery."""
+        secondary_table = relationship.secondary
+
+        assert secondary_table is not None
+        inner = (
+            sa.select(relation_cls)
+            .select_from(
+                sa.join(
+                    secondary_table,
+                    relation_cls.__table__,
+                    relationship.secondaryjoin,
+                )
+            )
+            .where(
+                adapter.traverse(relationship.primaryjoin) if adapter else relationship.primaryjoin
+            )
+        )
+        inner = _apply_conditions(
+            _apply_order_by(inner, relation_cls, self.order_by),
+            relationship.key,
+            conditions,  # type: ignore[arg-type]
+        )
+        inner = inner.limit(self.limit)
+        relation_table = sa.inspect(relation_cls).local_table
+        inner_sq = inner.correlate_except(relation_table, secondary_table).subquery()
+        rn_col = sa.func.row_number().over().label("_sqla_rn")
+        subq = sa.select(*inner_sq.c, rn_col)
+
+        lateral_name = (
+            f"{get_table_name(relation_cls)}_{relationship.key}"
+            if is_alias
+            else get_table_name(relation_cls)
+        )
+        lateral = subq.lateral(name=lateral_name)
+        query = query.outerjoin(lateral, lateral.c._sqla_rn == rn_series.c._rn)  # noqa: SLF001
+        load = _construct_strategy(orm.contains_eager, relationship, load, alias=lateral)
+        self._lateral_map[relation_table] = lateral
+        self._query = query
+
+        return self._query, load
+
+    def _load_lateral_zip_o2m(
+        self,
+        relationship: orm.RelationshipProperty[orm.DeclarativeBase],
+        relation_cls: type[orm.DeclarativeBase],
+        load: _AbstractLoad | None,
+        *,
+        is_alias: bool,
+        conditions: Mapping[str, Any],
+        adapter: ClauseAdapter | None,
+        query: sa.Select[tuple[T]],
+        rn_series: sa.Subquery,
+    ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
+        inner = _apply_conditions(
+            _apply_order_by(
+                sa.select(relation_cls).limit(self.limit),
+                relation_cls,
+                self.order_by,
+            ),
+            relationship.key,
+            conditions,  # type: ignore[arg-type]
+        )
+        inner = inner.where(
+            adapter.traverse(relationship.primaryjoin) if adapter else relationship.primaryjoin
+        )
+        relation_table = sa.inspect(relation_cls).local_table
+        inner_sq = inner.correlate_except(relation_table).subquery()
+        rn_col = sa.func.row_number().over().label("_sqla_rn")
+        subq = sa.select(*inner_sq.c, rn_col)
+
+        lateral_name = (
+            f"{get_table_name(relation_cls)}_{relationship.key}"
+            if is_alias
+            else get_table_name(relation_cls)
+        )
+        if self.check_tables and lateral_name in get_table_names(query):
+            lateral_name = f"{lateral_name}_alias"
+            subq = subq.correlate_except(relation_table)
+
+        lateral = subq.lateral(name=lateral_name)
+        query = query.outerjoin(lateral, lateral.c._sqla_rn == rn_series.c._rn)  # noqa: SLF001
+        load = _construct_strategy(orm.contains_eager, relationship, load, alias=lateral)
+        relation_table = sa.inspect(relation_cls).local_table
+        self._lateral_map[relation_table] = lateral
+        self._query = query
+
+        return self._query, load
+
+    def _load_lateral(
+        self,
+        relationship: orm.RelationshipProperty[orm.DeclarativeBase],
+        relation_cls: type[orm.DeclarativeBase],
+        load: _AbstractLoad | None,
+        *,
+        is_alias: bool,
+        conditions: Mapping[str, Any],
+        adapter: ClauseAdapter | None,
+        query: sa.Select[tuple[T]],
+    ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
+        """Non-ZIP LATERAL: original ON TRUE path for M2M (with reuse) and O2M."""
+        subq = _apply_conditions(
+            _apply_order_by(
+                sa.select(relation_cls).limit(self.limit),
+                relation_cls,
+                self.order_by,
+            ),
+            relationship.key,
+            conditions,  # type: ignore[arg-type]
+        )
+        if relationship.secondary is not None and relationship.secondaryjoin is not None:
+            secondary_table = relationship.secondary
+            secondary_lateral = self._lateral_map.get(secondary_table)
+
+            if secondary_lateral is not None:
+                sec_adapter = ClauseAdapter(
+                    secondary_lateral,
+                    equivalents={col: {secondary_lateral.c[col.key]} for col in secondary_table.c},
+                )
+                subq = subq.where(sec_adapter.traverse(relationship.secondaryjoin))
+            else:
+                subq = subq.where(relationship.secondaryjoin)
+                primaryjoin = (
+                    adapter.traverse(relationship.primaryjoin)
+                    if adapter
+                    else relationship.primaryjoin
+                )
+                if self.check_tables:
+                    if secondary_table.description not in get_table_names(query):
+                        query = query.outerjoin(secondary_table, primaryjoin)
+                else:
+                    query = query.outerjoin(secondary_table, primaryjoin)
+        else:
+            subq = subq.where(
+                adapter.traverse(relationship.primaryjoin) if adapter else relationship.primaryjoin
+            )
+
+        lateral_name = (
+            f"{get_table_name(relation_cls)}_{relationship.key}"
+            if is_alias
+            else get_table_name(relation_cls)
+        )
+        if self.check_tables and lateral_name in get_table_names(query):
+            lateral_name = f"{lateral_name}_alias"
+            relation_table = sa.inspect(relation_cls).local_table
+            subq = subq.correlate_except(relation_table)
+
+        lateral = subq.lateral(name=lateral_name)
+        query = query.outerjoin(lateral, sa.true())
+        load = _construct_strategy(orm.contains_eager, relationship, load, alias=lateral)
+        relation_table = sa.inspect(relation_cls).local_table
+        self._lateral_map[relation_table] = lateral
+        self._query = query
+
+        return self._query, load
+
+    def _load_m2o(
+        self,
+        relationship: orm.RelationshipProperty[orm.DeclarativeBase],
+        relation_cls: type[orm.DeclarativeBase],
+        load: _AbstractLoad | None,
+        *,
+        is_alias: bool,
+        conditions: Mapping[str, Any],
+    ) -> tuple[sa.Select[tuple[T]], _AbstractLoad]:
+        """M2O: selectinload (alias) or outerjoin + contains_eager / joinedload."""
+        if is_alias:
             load = _construct_strategy(orm.selectinload, relationship, load)
         else:
             parent_table = get_table_name(relationship.parent.class_)
@@ -429,8 +575,90 @@ class SelectBuilder(Generic[T]):
                 load = _construct_strategy(orm.contains_eager, relationship, load)
             else:
                 load = _construct_strategy(orm.joinedload, relationship, load)
-
         return self._query, load
+
+    def _check_zip_needs(  # noqa: C901
+        self, resolved: list[Sequence[orm.RelationshipProperty[orm.DeclarativeBase]]]
+    ) -> None:
+        if self.limit is None:
+            return
+
+        if not self.optimization:
+            return
+
+        depth_paths: dict[int, set[str]] = {}
+        for rels in resolved:
+            cp = ""
+            for depth, rel in enumerate(rels):
+                cp = f"{cp}.{rel.key}" if cp else rel.key
+                is_self_ref = (
+                    rel.mapper.class_ is self.model and rel.parent.class_ is rel.mapper.class_
+                )
+                if rel.uselist and not is_self_ref:
+                    depth_paths.setdefault(depth, set()).add(cp)
+
+        zip_depths = sorted(d for d, paths in depth_paths.items() if len(paths) >= 2)  # noqa: PLR2004
+
+        if not zip_depths:
+            return
+
+        max_limit = self.limit
+        if self.conditions:
+            zip_depth_set = set(zip_depths)
+            for rels in resolved:
+                cp = ""
+                for depth, rel in enumerate(rels):
+                    cp = f"{cp}.{rel.key}" if cp else rel.key
+                    if depth in zip_depth_set and rel.uselist:
+                        probe = _apply_conditions(
+                            sa.select(rel.mapper.class_).limit(self.limit),
+                            rel.key,
+                            self.conditions,  # type: ignore[arg-type]
+                        )
+                        max_limit = max(max_limit, _extract_limit(probe, self.limit))
+
+        _base = sa.select(sa.literal(1).label("_rn"))
+        _cte = _base.cte(name="_sqla_rn_cte", recursive=True)
+        _cte = _cte.union_all(
+            sa.select((_cte.c._rn + 1).label("_rn")).where(_cte.c._rn < max_limit)  # noqa: SLF001
+        )
+
+        for idx, depth in enumerate(zip_depths):
+            name = "_sqla_rn" if idx == 0 else f"_sqla_rn_{idx}"
+            subq = sa.select(_cte.c._rn).subquery(name=name)  # noqa: SLF001
+            self._zip_levels[depth] = subq
+            self._query = self._query.outerjoin(subq, sa.true())
+
+    def _construct(
+        self, resolved: list[Sequence[orm.RelationshipProperty[orm.DeclarativeBase]]]
+    ) -> None:
+        # When a direct O2M targets the same table that an M2M uses as its
+        # secondary, move the O2M before the M2M so its LATERAL is available
+        # for reuse (avoids a duplicate raw join for the association table).
+        idx: dict[sa.FromClause, list[int | None]] = {}
+        for i, rels in enumerate(resolved):
+            rel = rels[0]
+            if (sec := rel.secondary) is not None:
+                entry = idx.setdefault(sec, [None, None])
+                entry[1] = i  # m2m
+            else:
+                target = rel.mapper.local_table
+                entry = idx.setdefault(target, [None, None])
+                entry[0] = i  # o2m
+
+        for o2m_idx, m2m_idx in idx.values():
+            if o2m_idx is not None and m2m_idx is not None and o2m_idx > m2m_idx:
+                resolved[m2m_idx], resolved[o2m_idx] = resolved[o2m_idx], resolved[m2m_idx]
+
+        # Auto-detect sibling LATERALs for ZIP optimization.
+        # When 2+ top-level uselist relationships use LATERAL (i.e. limit is set),
+        # align them via recursive CTE + ROW_NUMBER to avoid cross-product.
+        self._check_zip_needs(resolved)
+
+        for relationships in resolved:
+            load = self._construct_loads(relationships)
+            if load:
+                self._options += load
 
     def _get_clause_adapter(self, table: sa.Table | sa.FromClause) -> ClauseAdapter | None:
         """Return a ClauseAdapter that remaps *table* to its lateral alias, or None."""
@@ -488,6 +716,7 @@ class SelectBuilder(Generic[T]):
                 return self._query, load
 
             load = _construct_strategy(orm.selectinload, relationship, load)
+
             return self._query, load
 
         conditions = self.conditions or {}
@@ -663,8 +892,15 @@ def _apply_conditions(
     ],
 ) -> sa.Select[tuple[T]]:
     """Apply a per-relationship condition transformer to *query*."""
-
     return condition(query) if conditions and (condition := conditions.get(key)) else query
+
+
+def _extract_limit(query: sa.Select[Any], default: int) -> int:
+    """Extract integer LIMIT from a Select, or return *default*."""
+    try:
+        return val if (val := query._limit) is not None else default  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return default
 
 
 def _apply_order_by(
@@ -707,6 +943,7 @@ def _select_with_relationships(
         order_by=params.order_by,
         many_load=params.many_load,
         distinct=params.distinct,
+        optimization=params.optimization,
     )
 
     return builder.build(loads=params.loads, query=params.query)
@@ -776,6 +1013,9 @@ def sqla_select(
             Defaults to False.
         limit: int | None
             Maximum number of related records to load per relationship. Defaults to 50.
+        optimization: bool
+            Enable ZIP optimization (ROW_NUMBER alignment for sibling LATERALs).
+            Defaults to True. Set to False to use plain LATERAL ON TRUE joins.
 
     Returns:
         A SQLAlchemy Select statement with configured eager loading.

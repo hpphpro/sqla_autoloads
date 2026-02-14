@@ -54,3 +54,16 @@ class TestDeepLoading:
             all_reactions.extend(comment.reactions)
 
         assert len(all_reactions) == 2
+
+    async def test_is_alias_m2o_deep_chain(
+        self, session: AsyncSession, seed_data: dict[str, list[Base]]
+    ) -> None:
+        """Deep chain where same class is M2O target at multiple depths (author appears twice)."""
+        query = sqla_select(model=User, loads=("posts.comments.post.author",))
+        result = await session.execute(query)
+        users = result.unique().scalars().all()
+        alice = next(u for u in users if u.name == "alice")
+        for post in alice.posts:
+            for comment in post.comments:
+                assert comment.post is not None
+                assert comment.post.author is not None

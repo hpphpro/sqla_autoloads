@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from sqla_autoloads.core import SelectBuilder
 from sqla_autoloads.node import Node, get_node, init_node
 
-from ..models import Base, Post, User
+from ..models import Base, Category, Post, User
 
 
 def _get_node() -> Node:
@@ -116,7 +116,7 @@ class TestSelectBuilder:
 
         assert adapter is not None
 
-    def test_invalid_many_load_raises(self) -> None:
+    def test_invalid_many_load_warns(self) -> None:
         node = _get_node()
         builder = SelectBuilder(
             model=User,
@@ -129,7 +129,7 @@ class TestSelectBuilder:
             many_load="invalidload",
             distinct=False,
         )
-        with pytest.raises(KeyError):
+        with pytest.warns(UserWarning, match="Unknown many_load strategy"):
             builder.build(loads=("posts",))
 
     def test_distinct_flag(self) -> None:
@@ -149,3 +149,37 @@ class TestSelectBuilder:
         sql = str(query.compile(compile_kwargs={"literal_binds": True}))
 
         assert "DISTINCT" in sql.upper()
+
+    def test_invalid_order_by_raises(self) -> None:
+        """order_by with nonexistent column raises AttributeError."""
+        node = _get_node()
+        builder = SelectBuilder(
+            model=User,
+            node=node,
+            limit=50,
+            check_tables=False,
+            conditions=None,
+            self_key="",
+            order_by=("nonexistent_column",),
+            many_load="subqueryload",
+            distinct=False,
+        )
+        with pytest.raises(AttributeError):
+            builder.build(loads=("posts",))
+
+    def test_self_ref_without_self_key_raises(self) -> None:
+        """Self-ref relationship without self_key raises ValueError."""
+        node = _get_node()
+        builder = SelectBuilder(
+            model=Category,
+            node=node,
+            limit=None,
+            check_tables=False,
+            conditions=None,
+            self_key="",
+            order_by=None,
+            many_load="subqueryload",
+            distinct=False,
+        )
+        with pytest.raises(ValueError, match="self_key"):
+            builder.build(loads=("children",))

@@ -6,7 +6,7 @@ versus a single sqla_select call.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import sqlalchemy as sa
 from sqlalchemy import orm
@@ -28,7 +28,7 @@ async def get_users_raw(
     *loads: UserLoad,
 ) -> list[User]:
     query = sa.select(User)
-    options: list[orm.MapperOption] = []
+    options: list[Any] = []
 
     if "posts" in loads:
         lateral = (
