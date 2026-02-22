@@ -16,15 +16,14 @@ pip install sqla-autoloads
 ## Quick Start
 
 ```python
-from sqla_autoloads import init_node, get_node, sqla_select
+from sqla_autoloads import init_node, get_node, sqla_select, unique_scalars
 
 # 1. Initialize once at startup
 init_node(get_node(Base))
 
 # 2. Query with eager-loading
 query = sqla_select(model=User, loads=("posts", "roles"))
-result = await session.execute(query)
-users = result.unique().scalars().all()
+users = unique_scalars(await session.execute(query))
 # users[0].posts  — already loaded, no N+1
 ```
 
@@ -58,7 +57,7 @@ async def get_users(*loads: UserLoad) -> list[User]:
         options.append(orm.contains_eager(User.profile))
     if options:
         query = query.options(*options)
-    return (await session.execute(query)).unique().scalars().all()
+    return unique_scalars(await session.execute(query))
 ```
 
 **sqla-autoloads** — one call, on-demand:
@@ -68,7 +67,7 @@ UserLoad = Literal["posts", "roles", "profile"]
 
 async def get_users(*loads: UserLoad) -> list[User]:
     query = sqla_select(model=User, loads=loads)
-    return (await session.execute(query)).unique().scalars().all()
+    return unique_scalars(await session.execute(query))
 ```
 
 ## Features
@@ -189,12 +188,15 @@ query = sqla_select(model=User, loads=("posts",), limit=None)
 
 `sqla_select` uses `outerjoin` + `contains_eager` and `joinedload` to load relationships. These strategies produce **duplicate parent rows** in the raw result (one row per related object). This is standard SQLAlchemy behavior.
 
-You **must** call `.unique()` on the result before `.scalars()`:
+You **must** call `.unique()` on the result before `.scalars()`. Use the `unique_scalars` helper:
 
 ```python
-result = await session.execute(query)
-users = result.unique().scalars().all()
+from sqla_autoloads import unique_scalars
+
+users = unique_scalars(await session.execute(query))
 ```
+
+Or manually: `result.unique().scalars().all()`.
 
 Without `.unique()`, SQLAlchemy will raise an error or return duplicate objects.
 
@@ -202,7 +204,20 @@ Without `.unique()`, SQLAlchemy will raise an error or return duplicate objects.
 
 ### Filtering with `.where()` after `sqla_select`
 
-When `sqla_select` uses LATERAL subqueries, table names in the FROM clause become LATERAL aliases. This means `Model.column` references may not resolve correctly in `.where()` — use `sa.literal_column("alias.column")` instead. See **[FAQ.md](FAQ.md)** for naming rules and examples.
+When `sqla_select` uses LATERAL subqueries, table names in the FROM clause become LATERAL aliases. This means `Model.column` references may not resolve correctly in `.where()`. Use `resolve_col` to get a bound column element:
+
+```python
+from sqla_autoloads import resolve_col, sqla_laterals
+
+query = sqla_select(model=User, loads=("posts",))
+col = resolve_col(query, "posts.title")
+query = query.where(col == "hello")
+
+# Discover available alias names:
+print(sqla_laterals(query))  # {"posts": <Lateral ...>}
+```
+
+Alternatively, use `sa.literal_column("alias.column")`. See **[FAQ.md](FAQ.md)** for naming rules and examples.
 
 ## API Reference
 
@@ -212,7 +227,12 @@ When `sqla_select` uses LATERAL subqueries, table names in the FROM clause becom
 | `init_node(mapping)` | Initialize the relationship graph singleton (call once at startup) |
 | `get_node(Base)` | Extract relationship mapping from a declarative base |
 | `add_conditions(*exprs)` | Create a condition function for filtering loaded relationships |
+| `unique_scalars(result)` | Shorthand for `result.unique().scalars().all()` |
 | `Node()` | Access the singleton relationship graph |
+| `resolve_col(query, "alias.col")` | Resolve a LATERAL alias column to a bound ColumnElement |
+| `sqla_laterals(query)` | Return `{name: Lateral}` dict for all LATERAL joins in query |
+| `sqla_cache_info()` | Return LRU cache statistics for all internal caches |
+| `sqla_cache_clear()` | Clear all internal LRU caches |
 | `SelectBuilder` | Query builder class (used internally, also exported) |
 
 ### `sqla_select` parameters

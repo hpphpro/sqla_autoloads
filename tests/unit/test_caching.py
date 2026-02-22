@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+from sqla_autoloads import sqla_cache_clear, sqla_cache_info, sqla_select
 from sqla_autoloads.core import _bfs_search, _select_with_relationships, _LoadParams
 from sqla_autoloads.node import Node, get_node, init_node
 from sqla_autoloads.tools import get_table_name, _get_table_name
@@ -65,3 +66,30 @@ class TestLruCaching:
         q2 = _select_with_relationships(params)
 
         assert q1 is q2
+
+
+class TestPublicCacheAPI:
+    def test_cache_info_keys(self) -> None:
+        info = sqla_cache_info()
+        expected = {
+            "_bfs_search",
+            "_resolve_dotted_path",
+            "_select_with_relationships",
+            "_find_self_key",
+            "_get_primary_key",
+            "_get_table_name",
+        }
+
+        assert set(info.keys()) == expected
+
+    def test_cache_clear_resets_all(self) -> None:
+        # Populate caches
+        sqla_select(model=User, loads=("posts",))
+        info = sqla_cache_info()
+
+        assert any(v.currsize > 0 for v in info.values())
+
+        sqla_cache_clear()
+        info = sqla_cache_info()
+
+        assert all(v.currsize == 0 for v in info.values())

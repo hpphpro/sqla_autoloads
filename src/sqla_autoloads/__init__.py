@@ -8,10 +8,18 @@ dotted-path traversal are all handled automatically.
 """
 
 from ._version import __version__, __version_tuple__
-from .core import SelectBuilder, sqla_select
+from .core import SelectBuilder, sqla_cache_clear, sqla_cache_info, sqla_select
 from .datastructures import frozendict
 from .node import Node, get_node, init_node
-from .tools import add_conditions, get_primary_key, get_table_name, get_table_names
+from .tools import (
+    add_conditions,
+    get_primary_key,
+    get_table_name,
+    get_table_names,
+    resolve_col,
+    sqla_laterals,
+    unique_scalars,
+)
 
 
 __all__ = (
@@ -26,5 +34,10 @@ __all__ = (
     "get_table_name",
     "get_table_names",
     "init_node",
+    "resolve_col",
+    "sqla_cache_clear",
+    "sqla_cache_info",
+    "sqla_laterals",
     "sqla_select",
+    "unique_scalars",
 )

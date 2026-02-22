@@ -12,14 +12,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from sqla_autoloads.core import (
-    _bfs_search,
-    _find_self_key,
-    _resolve_dotted_path,
-    _select_with_relationships,
-)
+from sqla_autoloads import sqla_cache_clear
 from sqla_autoloads.node import Node, get_node, init_node
-from sqla_autoloads.tools import _get_primary_key, _get_table_name
 
 from .models import (
     Attachment,
@@ -263,15 +257,7 @@ async def seed_data(session: AsyncSession) -> dict[str, list[Base]]:
 @pytest.fixture(autouse=True)
 def clear_lru_caches() -> Iterator[None]:
     yield
-    for fn in (
-        _bfs_search,
-        _resolve_dotted_path,
-        _select_with_relationships,
-        _find_self_key,
-        _get_primary_key,
-        _get_table_name,
-    ):
-        fn.cache_clear()
+    sqla_cache_clear()
 
 
 @pytest.fixture

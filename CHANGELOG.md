@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-22
+
+### Added
+- `unique_scalars(result)` — shorthand for `result.unique().scalars().all()`
+- `resolve_col(query, "alias.col")` — resolve LATERAL alias column to a bound `ColumnElement`
+- `sqla_laterals(query)` — return `{name: Lateral}` dict for all LATERAL joins in a query
+- `sqla_cache_info()` — return LRU cache statistics for all internal caches
+- `sqla_cache_clear()` — clear all internal LRU caches
+- DX tests for new public helpers (`resolve_col`, `sqla_laterals`, `unique_scalars`)
+- Public cache API tests (`sqla_cache_info`, `sqla_cache_clear`)
+- Honest benchmark ratios (manual/lateral, zip/nozip) in `TestDataBenchmarks`
+- Benchmark scenarios: ZIP overhead on small cardinality, many-LATERALs overhead
+
+### Changed
+- README: uses `unique_scalars` in all examples, documents `resolve_col` + `sqla_laterals`
+- FAQ: `resolve_col` shown as recommended approach (over `sa.literal_column`)
+- Internal: `conftest.py` uses public `sqla_cache_clear()` instead of importing private functions
+
 ## [0.1.4] - 2026-02-14
 
 ### Added

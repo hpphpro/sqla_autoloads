@@ -6,9 +6,28 @@ from typing import Any, TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy import orm
+from sqlalchemy.sql.selectable import Lateral
 
 
 T = TypeVar("T", bound=orm.DeclarativeBase)
+_R = TypeVar("_R")
+
+
+def unique_scalars(result: sa.Result[tuple[_R]]) -> Sequence[_R]:
+    """Shorthand for ``result.unique().scalars().all()``.
+
+    Use after ``session.execute(query)`` on queries built by :func:`sqla_select`
+    to deduplicate rows produced by outer-join eager loading.
+
+    Example (async)::
+
+        users = unique_scalars(await session.execute(query))
+
+    Example (sync)::
+
+        users = unique_scalars(session.execute(query))
+    """
+    return result.unique().scalars().all()
 
 
 @lru_cache
@@ -124,3 +143,75 @@ def add_conditions(
         return query.where(*conditions)
 
     return _add
+
+
+def _find_from_by_name(
+    root: sa.FromClause, name: str
+) -> sa.FromClause | None:
+    """Find a subquery/alias/lateral/table with *name* in the FROM tree (iterative)."""
+    stack: list[sa.FromClause] = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, sa.Join):
+            stack.append(node.left)
+            stack.append(node.right)
+            continue
+        if getattr(node, "name", None) == name:
+            return node
+        element = getattr(node, "element", None)
+        if element is not None:
+            stack.append(element)
+    return None
+
+
+def resolve_col(query: sa.Select[Any], ref: str) -> sa.ColumnElement[Any]:
+    """Resolve ``'alias.column'`` to a bound ColumnElement from *query*.
+
+    Works on queries built by :func:`sqla_select`. Instead of
+    ``sa.literal_column("posts.title")``, use::
+
+        col = resolve_col(query, "posts.title")
+        query = query.where(col == "hello")
+
+    The *ref* format is ``alias_name.column_name`` where ``alias_name`` is
+    the LATERAL/subquery alias (e.g. ``posts``, ``messages_received_messages``,
+    ``categories_children``).  These are SQL identifiers — never dotted paths.
+    Use ``sqla_laterals(query)`` or ``print(query)`` to discover alias names.
+
+    Raises ``ValueError`` if alias or column not found.
+    """
+    alias_name, sep, col_name = ref.partition(".")
+    if not sep:
+        raise ValueError(f"Expected 'alias.column' format, got {ref!r}")
+    for root in query.get_final_froms():
+        found = _find_from_by_name(root, alias_name)
+        if found is not None and hasattr(found, "c"):
+            try:
+                return found.c[col_name]
+            except KeyError:
+                raise ValueError(
+                    f"Column {col_name!r} not found in alias {alias_name!r}. "
+                    f"Available: {[c.key for c in found.c]}"
+                ) from None
+    raise ValueError(
+        f"Alias {alias_name!r} not found in query. "
+        f"Available: {get_table_names(query)}"
+    )
+
+
+def sqla_laterals(query: sa.Select[Any]) -> dict[str, sa.Subquery]:
+    """Return ``{alias_name: subquery}`` for all LATERAL joins in *query*."""
+    out: dict[str, sa.Subquery] = {}
+    for root in query.get_final_froms():
+        stack: list[sa.FromClause] = [root]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, sa.Join):
+                stack.append(node.left)
+                stack.append(node.right)
+                continue
+            if isinstance(node, Lateral):
+                name = getattr(node, "name", None)
+                if name:
+                    out[name] = node
+    return out

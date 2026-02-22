@@ -1068,3 +1068,35 @@ def sqla_select(
         params["limit"] = DEFAULT_RELATIONSHIP_LOAD_LIMIT
 
     return _select_with_relationships(_LoadParams[T](**params))
+
+
+def sqla_cache_info() -> dict[str, Any]:
+    """Return LRU cache statistics for all internal caches."""
+    from .tools import _get_primary_key, _get_table_name
+
+    return {
+        fn.__name__: fn.cache_info()
+        for fn in (
+            _bfs_search,
+            _resolve_dotted_path,
+            _select_with_relationships,
+            _find_self_key,
+            _get_primary_key,
+            _get_table_name,
+        )
+    }
+
+
+def sqla_cache_clear() -> None:
+    """Clear all internal LRU caches."""
+    from .tools import _get_primary_key, _get_table_name
+
+    for fn in (
+        _bfs_search,
+        _resolve_dotted_path,
+        _select_with_relationships,
+        _find_self_key,
+        _get_primary_key,
+        _get_table_name,
+    ):
+        fn.cache_clear()

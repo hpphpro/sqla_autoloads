@@ -24,13 +24,17 @@ query = query.where(Post.title == "hello")  # OK
 query = sqla_select(model=Category, loads=("children",), self_key="parent_id")
 query = query.where(Category.name == "Electronics")          # WRONG — resolves to "categories.name"
 query = query.where(sa.literal_column("categories_children.name") == "Electronics")  # CORRECT
+# Or use resolve_col (recommended):
+col = resolve_col(query, "categories_children.name")
+query = query.where(col == "Electronics")
 
 # Multiple FKs → second+ alias is "messages_received_messages"
 query = sqla_select(model=User, loads=("sent_messages", "received_messages"))
 query = query.where(sa.literal_column("messages_received_messages.id") > 10)  # CORRECT
+# Or: resolve_col(query, "messages_received_messages.id")
 ```
 
-**Tip:** `print(query)` to see the actual SQL and alias names.
+**Tip:** use `sqla_laterals(query)` or `print(query)` to see alias names.
 
 ---
 
@@ -49,6 +53,11 @@ query = sqla_select(
 LATERAL alias: **`categories_children`**
 
 ```python
+# Using resolve_col (recommended):
+col = resolve_col(query, "categories_children.name")
+query = query.where(col == "Electronics")
+
+# Or using literal_column:
 query = query.where(sa.literal_column("categories_children.name") == "Electronics")
 ```
 
@@ -72,10 +81,15 @@ query = sqla_select(
 | 3rd   | `owned_messages`     | `messages_owned_messages`      |
 
 ```python
-# First relationship — plain table name, Message.id works too
-query = query.where(sa.literal_column("messages.id") > 10)
+# Using resolve_col (recommended):
+col = resolve_col(query, "messages.id")
+query = query.where(col > 10)
 
-# Second relationship — table + relkey, must use literal_column
+col2 = resolve_col(query, "messages_received_messages.id")
+query = query.where(col2 > 10)
+
+# Or using literal_column:
+query = query.where(sa.literal_column("messages.id") > 10)
 query = query.where(sa.literal_column("messages_received_messages.id") > 10)
 ```
 
@@ -102,6 +116,11 @@ Without `check_tables=True` the LATERAL name `posts` would collide with the alre
 LATERAL alias: **`posts_alias`**
 
 ```python
+# Using resolve_col (recommended):
+col = resolve_col(query, "posts_alias.title")
+query = query.where(col == "hello")
+
+# Or using literal_column:
 query = query.where(sa.literal_column("posts_alias.title") == "hello")
 ```
 
@@ -174,11 +193,18 @@ query = sqla_select(
 
 ## 7. How do I find the exact alias name?
 
-Print the compiled query:
+Use `sqla_laterals` to get a dict of all LATERAL aliases:
 
 ```python
-query = sqla_select(model=User, loads=("posts", "roles"))
+from sqla_autoloads import sqla_laterals
 
+query = sqla_select(model=User, loads=("posts", "roles"))
+print(sqla_laterals(query))  # {"posts": <Lateral ...>, "roles": <Lateral ...>}
+```
+
+Or print the compiled query:
+
+```python
 # Quick look
 print(query)
 
@@ -187,7 +213,7 @@ from sqlalchemy.dialects import postgresql
 print(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 ```
 
-Look for `LATERAL (...) AS <name>` in the output — `<name>` is the alias to use with `sa.literal_column()`.
+Look for `LATERAL (...) AS <name>` in the output — `<name>` is the alias to use with `resolve_col()` or `sa.literal_column()`.
 
 ---
 
